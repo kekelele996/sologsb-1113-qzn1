@@ -40,6 +40,7 @@ export default function App() {
   const targets = useTargetStore((s) => s.targets);
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
+  const maintenances = useEquipmentStore((s) => s.maintenances);
   const [toast, setToast] = useState(false);
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
@@ -51,6 +52,7 @@ export default function App() {
       targets,
       telescopes,
       instruments,
+      maintenances: maintenances.filter((window) => window.nightId === night?.id),
     });
     downloadText(`观测清单-${night?.date ?? 'night'}.txt`, text);
     setToast(true);

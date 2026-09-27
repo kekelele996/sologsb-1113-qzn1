@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { db, deleteRow, persistRow } from '../hooks/usePersistentStore';
+import { db, deleteRow, persistRow, SCHEMA_VERSION } from '../hooks/usePersistentStore';
 import { uid } from '../utils/id';
-import type { FieldOfView, Instrument, Telescope, TelescopeStatus, TerminalType } from '../types';
+import type { FieldOfView, Instrument, MaintenanceWindow, Telescope, TelescopeStatus, TerminalType } from '../types';
 
 export interface TelescopeInput {
   code: string;
@@ -23,9 +23,18 @@ export interface InstrumentInput {
   telescopeCode: string;
 }
 
+export interface MaintenanceInput {
+  nightId: string;
+  telescopeId: string;
+  startTime: string;
+  endTime: string;
+  reason: string;
+}
+
 interface EquipmentState {
   telescopes: Telescope[];
   instruments: Instrument[];
+  maintenances: MaintenanceWindow[];
   hydrated: boolean;
   hydrate: () => Promise<void>;
   addTelescope: (input: TelescopeInput) => Promise<Telescope>;
@@ -34,21 +43,29 @@ interface EquipmentState {
   addInstrument: (input: InstrumentInput) => Promise<Instrument>;
   updateInstrument: (id: string, patch: Partial<InstrumentInput>) => Promise<void>;
   removeInstrument: (id: string) => Promise<void>;
+  /** 登记某观测夜的设备维护时段（停机检修封锁区间） */
+  addMaintenance: (input: MaintenanceInput) => Promise<MaintenanceWindow>;
+  removeMaintenance: (id: string) => Promise<void>;
   /** 按靶面与焦距换算视场角 */
   fieldOfView: (telescopeId: string, instrumentId: string) => FieldOfView;
 }
 
 const RAD = Math.PI / 180;
 
-/** 望远镜与终端分配（含视场角换算） */
+/** 望远镜与终端分配（含视场角换算与维护时段登记） */
 export const useEquipmentStore = create<EquipmentState>()((set, get) => ({
   telescopes: [],
   instruments: [],
+  maintenances: [],
   hydrated: false,
 
   hydrate: async () => {
-    const [telescopes, instruments] = await Promise.all([db.telescopes.orderBy('code').toArray(), db.instruments.toArray()]);
-    set({ telescopes, instruments, hydrated: true });
+    const [telescopes, instruments, maintenances] = await Promise.all([
+      db.telescopes.orderBy('code').toArray(),
+      db.instruments.toArray(),
+      db.maintenance.toArray(),
+    ]);
+    set({ telescopes, instruments, maintenances, hydrated: true });
   },
 
   addTelescope: async (input) => {
@@ -107,6 +124,26 @@ export const useEquipmentStore = create<EquipmentState>()((set, get) => ({
   removeInstrument: async (id) => {
     await deleteRow('instruments', id);
     set({ instruments: get().instruments.filter((instrument) => instrument.id !== id) });
+  },
+
+  addMaintenance: async (input) => {
+    const maintenance: MaintenanceWindow = {
+      id: uid('mnt'),
+      nightId: input.nightId,
+      telescopeId: input.telescopeId,
+      startTime: input.startTime,
+      endTime: input.endTime,
+      reason: input.reason.trim(),
+      schemaVersion: SCHEMA_VERSION,
+    };
+    await persistRow('maintenance', maintenance);
+    set({ maintenances: [...get().maintenances, maintenance] });
+    return maintenance;
+  },
+
+  removeMaintenance: async (id) => {
+    await deleteRow('maintenance', id);
+    set({ maintenances: get().maintenances.filter((maintenance) => maintenance.id !== id) });
   },
 
   fieldOfView: (telescopeId, instrumentId) => {

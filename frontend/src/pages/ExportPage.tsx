@@ -7,6 +7,7 @@ import MenuItem from '@mui/material/MenuItem';
 import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import Timeline, { type TimelineBar } from '../components/common/Timeline';
 import ConflictBadge from '../components/common/ConflictBadge';
@@ -31,21 +32,24 @@ export default function ExportPage() {
   const targets = useTargetStore((s) => s.targets);
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
-  const { conflictsOfNight, conflictIds } = useConflictCheck();
+  const maintenances = useEquipmentStore((s) => s.maintenances);
+  const { conflictsOfNight, conflictIds, maintenanceHitsOfNight } = useConflictCheck();
   const [notice, setNotice] = useState('');
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
   const nightSessions = useMemo(() => sessions.filter((session) => session.nightId === night?.id), [sessions, night?.id]);
+  const nightMaintenances = useMemo(() => maintenances.filter((window) => window.nightId === night?.id), [maintenances, night?.id]);
+  const maintenanceHits = useMemo(() => maintenanceHitsOfNight(night?.id ?? ''), [maintenanceHitsOfNight, night?.id]);
   const conflicts = useMemo(() => conflictsOfNight(night?.id ?? ''), [conflictsOfNight, night?.id]);
   const ids = useMemo(() => conflictIds(night?.id), [conflictIds, night?.id]);
 
   const planText = useMemo(
-    () => buildNightPlanText({ night, sessions: nightSessions, targets, telescopes, instruments }),
-    [night, nightSessions, targets, telescopes, instruments],
+    () => buildNightPlanText({ night, sessions: nightSessions, targets, telescopes, instruments, maintenances: nightMaintenances }),
+    [night, nightSessions, targets, telescopes, instruments, nightMaintenances],
   );
   const csv = useMemo(
-    () => buildPlanCsv({ night, sessions: nightSessions, targets, telescopes, instruments }),
-    [night, nightSessions, targets, telescopes, instruments],
+    () => buildPlanCsv({ night, sessions: nightSessions, targets, telescopes, instruments, maintenances: nightMaintenances }),
+    [night, nightSessions, targets, telescopes, instruments, nightMaintenances],
   );
 
   const bars: TimelineBar[] = useMemo(
@@ -92,6 +96,12 @@ export default function ExportPage() {
         </TextField>
         <Chip size="small" label={`排程段 ${nightSessions.length}`} />
         <Chip size="small" label={`计划帧数合计 ${nightSessions.reduce((sum, session) => sum + session.plannedFrames, 0)}`} />
+        <Chip
+          size="small"
+          color={nightMaintenances.length ? 'warning' : 'default'}
+          variant={nightMaintenances.length ? 'filled' : 'outlined'}
+          label={`维护时段 ${nightMaintenances.length} · 受影响 ${new Set(maintenanceHits.map((hit) => hit.sessionId)).size} 段`}
+        />
         <ConflictBadge conflicts={conflicts} />
         <Button
           variant="contained"
@@ -118,7 +128,42 @@ export default function ExportPage() {
       </Stack>
 
       <Box className="no-print" sx={{ mb: 3 }}>
-        <Timeline bars={bars} ticks={timelineTicks(120)} totalMinutes={NIGHT_TOTAL_MINUTES} conflictIds={ids} height={104} />
+        <Timeline bars={bars} ticks={timelineTicks(120)} totalMinutes={NIGHT_TOTAL_MINUTES} conflictIds={ids} height={104}>
+          {/* 维护封锁区间：橙色斜纹贯穿带 */}
+          {nightMaintenances.map((window) => {
+            const startMinute = Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, axisMinutes(window.startTime)));
+            const rawEnd = axisMinutes(window.endTime);
+            const endMinute = Math.max(startMinute + 6, Math.min(NIGHT_TOTAL_MINUTES, rawEnd <= startMinute ? rawEnd + 1440 : rawEnd));
+            const telescope = telescopes.find((item) => item.id === window.telescopeId);
+            return (
+              <Box
+                key={window.id}
+                sx={{
+                  position: 'absolute',
+                  left: `${(startMinute / NIGHT_TOTAL_MINUTES) * 100}%`,
+                  width: `${((endMinute - startMinute) / NIGHT_TOTAL_MINUTES) * 100}%`,
+                  top: 0,
+                  bottom: 18,
+                  background: 'repeating-linear-gradient(45deg, rgba(237,108,2,0.30) 0 8px, rgba(237,108,2,0.06) 8px 16px)',
+                  border: '1px dashed',
+                  borderColor: 'warning.main',
+                  borderRadius: 1,
+                  pointerEvents: 'none',
+                  zIndex: 1,
+                }}
+              >
+                <Tooltip title={`维护 ${window.startTime}-${window.endTime}（${telescope?.code ?? ''}）：${window.reason}`}>
+                  <Typography
+                    variant="caption"
+                    sx={{ pointerEvents: 'auto', display: 'inline-block', color: 'warning.dark', fontWeight: 700, pl: 0.5, whiteSpace: 'nowrap' }}
+                  >
+                    🔧 {telescope?.code ?? '维护'}
+                  </Typography>
+                </Tooltip>
+              </Box>
+            );
+          })}
+        </Timeline>
       </Box>
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '2fr 1fr' }, gap: 2 }}>

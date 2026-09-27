@@ -1,12 +1,12 @@
 import Dexie, { type Table } from 'dexie';
 import { useEffect, useState } from 'react';
-import type { Instrument, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
+import type { Instrument, MaintenanceWindow, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
 
 /** IndexedDB 库名（浏览器本地存储，无后端） */
 export const DB_NAME = 'gbobsplan-db';
 
 /** 当前数据结构版本，写入每条记录并用于升级迁移判定 */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 class ObsPlanDB extends Dexie {
   targets!: Table<ObsTarget, string>;
@@ -14,6 +14,7 @@ class ObsPlanDB extends Dexie {
   telescopes!: Table<Telescope, string>;
   instruments!: Table<Instrument, string>;
   nights!: Table<ObsNight, string>;
+  maintenance!: Table<MaintenanceWindow, string>;
   meta!: Table<{ key: string; value: string }, string>;
 
   constructor() {
@@ -55,12 +56,17 @@ class ObsPlanDB extends Dexie {
             }
           });
       });
+
+    // v3：新增设备维护时段表（未声明的表沿用 v2 索引）
+    this.version(3).stores({
+      maintenance: 'id, nightId, telescopeId',
+    });
   }
 }
 
 export const db = new ObsPlanDB();
 
-export type TableName = 'targets' | 'sessions' | 'telescopes' | 'instruments' | 'nights';
+export type TableName = 'targets' | 'sessions' | 'telescopes' | 'instruments' | 'nights' | 'maintenance';
 
 /** 写入单条记录（Dexie 读写封装，store 的增删改统一走这里） */
 export async function persistRow(table: TableName, row: unknown): Promise<void> {
@@ -134,18 +140,24 @@ const SEED_SESSIONS: ObsSession[] = [
   { id: 's-14', nightId: 'night-002', targetId: 'target-001', startTime: '02:10', endTime: '03:10', telescopeId: 'tel-001', instrumentId: 'ins-002', filterSlot: 'L', plannedFrames: 30, status: '待执行', schemaVersion: SCHEMA_VERSION },
 ];
 
+/** 示例维护时段：night-001 深夜 T-01 停机检修，正好撞上 s-05（M27，23:10-00:20）演示维护封锁 */
+const SEED_MAINTENANCE: MaintenanceWindow[] = [
+  { id: 'mnt-01', nightId: 'night-001', telescopeId: 'tel-001', startTime: '23:00', endTime: '00:30', reason: '制冷相机真空泵巡检，望远镜停机', schemaVersion: SCHEMA_VERSION },
+];
+
 /** 首次打开（表内无数据）时写入示例数据 */
 export async function seedIfEmpty(): Promise<void> {
   const flag = await db.meta.get('seeded');
   if (flag) return;
-  const [targetCount, sessionCount, telescopeCount, instrumentCount, nightCount] = await Promise.all([
+  const [targetCount, sessionCount, telescopeCount, instrumentCount, nightCount, maintenanceCount] = await Promise.all([
     db.targets.count(),
     db.sessions.count(),
     db.telescopes.count(),
     db.instruments.count(),
     db.nights.count(),
+    db.maintenance.count(),
   ]);
-  // Dexie 的 transaction 最多接受 5 张表 + 作用域，因此 meta 标记在事务外写入
+  // Dexie 的 transaction 最多接受 5 张表 + 作用域，因此 maintenance 与 meta 标记在事务外写入
   await db.transaction('rw', db.targets, db.sessions, db.telescopes, db.instruments, db.nights, async () => {
     if (targetCount === 0) await db.targets.bulkPut(SEED_TARGETS);
     if (nightCount === 0) await db.nights.bulkPut(SEED_NIGHTS);
@@ -153,6 +165,7 @@ export async function seedIfEmpty(): Promise<void> {
     if (instrumentCount === 0) await db.instruments.bulkPut(SEED_INSTRUMENTS);
     if (sessionCount === 0) await db.sessions.bulkPut(SEED_SESSIONS);
   });
+  if (maintenanceCount === 0) await db.maintenance.bulkPut(SEED_MAINTENANCE);
   await db.meta.put({ key: 'seeded', value: new Date().toISOString() });
 }
 

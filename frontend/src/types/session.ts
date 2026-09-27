@@ -44,6 +44,22 @@ export interface ConflictItem {
   overlapText: string;
 }
 
+/** 排程段与设备维护时段的冲突项 */
+export interface MaintenanceHit {
+  /** 被撞上的排程段 */
+  sessionId: string;
+  /** 造成封锁的维护时段 */
+  maintenanceId: string;
+  nightId: string;
+  telescopeId: string;
+  /** 受影响目标 ID */
+  targetId: string;
+  /** 重叠分钟数 */
+  overlapMinutes: number;
+  /** 重叠区间文案 */
+  overlapText: string;
+}
+
 export const SESSION_STATUSES: SessionStatus[] = ['待执行', '进行中', '已完成', '因云取消'];
 
 /** 4 种状态配色（MUI Chip color） */

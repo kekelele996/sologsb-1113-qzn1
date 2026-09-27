@@ -7,6 +7,7 @@ import CardContent from '@mui/material/CardContent';
 import MenuItem from '@mui/material/MenuItem';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
 import Timeline, { type TimelineBar } from '../components/common/Timeline';
@@ -31,10 +32,14 @@ export default function OverviewPage() {
   const targets = useTargetStore((s) => s.targets);
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
-  const { conflictIds, conflictsOfNight } = useConflictCheck();
+  const maintenances = useEquipmentStore((s) => s.maintenances);
+  const { conflictIds, conflictsOfNight, maintenanceHitsOfNight, maintenanceConflictIds } = useConflictCheck();
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
   const nightSessions = useMemo(() => sessions.filter((session) => session.nightId === night?.id), [sessions, night?.id]);
+  const nightMaintenances = useMemo(() => maintenances.filter((window) => window.nightId === night?.id), [maintenances, night?.id]);
+  const maintenanceHits = useMemo(() => maintenanceHitsOfNight(night?.id ?? ''), [maintenanceHitsOfNight, night?.id]);
+  const maintenanceIds = useMemo(() => maintenanceConflictIds(night?.id), [maintenanceConflictIds, night?.id]);
   const ids = useMemo(() => conflictIds(night?.id), [conflictIds, night?.id]);
   const conflicts = useMemo(() => conflictsOfNight(night?.id ?? ''), [conflictsOfNight, night?.id]);
 
@@ -120,7 +125,7 @@ export default function OverviewPage() {
         <ConflictBadge conflicts={conflicts} />
       </Stack>
 
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(4, 1fr)' }, gap: 2, mb: 2 }}>
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(5, 1fr)' }, gap: 2, mb: 2 }}>
         <Card variant="outlined">
           <CardContent>
             <Typography variant="caption" color="text.secondary">
@@ -150,6 +155,16 @@ export default function OverviewPage() {
         <Card variant="outlined">
           <CardContent>
             <Typography variant="caption" color="text.secondary">
+              维护时段
+            </Typography>
+            <Typography variant="h5" color={nightMaintenances.length ? 'warning.main' : 'success.main'}>
+              {nightMaintenances.length}
+            </Typography>
+          </CardContent>
+        </Card>
+        <Card variant="outlined">
+          <CardContent>
+            <Typography variant="caption" color="text.secondary">
               低于高度阈值（标灰）
             </Typography>
             <Typography variant="h5" color={dimmedTargets.length ? 'warning.main' : 'success.main'}>
@@ -167,6 +182,23 @@ export default function OverviewPage() {
               排程段 {conflict.sessionId} 与 {conflict.otherId} 在同一望远镜（{telescopeById(conflict.telescopeId)?.code ?? conflict.telescopeId}）上{conflict.overlapText}
             </div>
           ))}
+        </Alert>
+      ) : null}
+
+      {nightMaintenances.length > 0 ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <AlertTitle>本夜登记 {nightMaintenances.length} 段设备维护，时间轴上以橙色斜纹标出封锁区间</AlertTitle>
+          {nightMaintenances.map((window) => {
+            const hits = maintenanceHits.filter((hit) => hit.maintenanceId === window.id);
+            return (
+              <div key={window.id}>
+                {telescopeById(window.telescopeId)?.code ?? window.telescopeId} {window.startTime}-{window.endTime}（{window.reason}）
+                {hits.length > 0
+                  ? `：受影响 ${hits.map((hit) => `${targetById(hit.targetId)?.name ?? '未知目标'}（${hit.overlapText}）`).join('、')}`
+                  : '：未影响本夜排程'}
+              </div>
+            );
+          })}
         </Alert>
       ) : null}
 
@@ -238,7 +270,41 @@ export default function OverviewPage() {
             </Typography>
           </Box>
         }
-      />
+      >
+        {/* 维护封锁区间：橙色斜纹贯穿带 + 顶部标签，半透明显示不遮挡排程段 */}
+        {nightMaintenances.map((window) => {
+          const startMinute = Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, axisMinutes(window.startTime)));
+          const rawEnd = axisMinutes(window.endTime);
+          const endMinute = Math.max(startMinute + 6, Math.min(NIGHT_TOTAL_MINUTES, rawEnd <= startMinute ? rawEnd + 1440 : rawEnd));
+          return (
+            <Box
+              key={window.id}
+              sx={{
+                position: 'absolute',
+                left: `${(startMinute / NIGHT_TOTAL_MINUTES) * 100}%`,
+                width: `${((endMinute - startMinute) / NIGHT_TOTAL_MINUTES) * 100}%`,
+                top: 0,
+                bottom: 18,
+                background: 'repeating-linear-gradient(45deg, rgba(237,108,2,0.30) 0 8px, rgba(237,108,2,0.06) 8px 16px)',
+                border: '1px dashed',
+                borderColor: 'warning.main',
+                borderRadius: 1,
+                pointerEvents: 'none',
+                zIndex: 1,
+              }}
+            >
+              <Tooltip title={`维护 ${window.startTime}-${window.endTime}（${telescopeById(window.telescopeId)?.code ?? ''}）：${window.reason}`}>
+                <Typography
+                  variant="caption"
+                  sx={{ pointerEvents: 'auto', display: 'inline-block', color: 'warning.dark', fontWeight: 700, pl: 0.5, whiteSpace: 'nowrap' }}
+                >
+                  🔧 {telescopeById(window.telescopeId)?.code ?? '维护'}
+                </Typography>
+              </Tooltip>
+            </Box>
+          );
+        })}
+      </Timeline>
 
       <Box sx={{ mt: 2 }}>
         <Typography variant="subtitle1" sx={{ mb: 1 }}>
@@ -261,6 +327,7 @@ export default function OverviewPage() {
                       <Chip size="small" variant="outlined" label={`${session.plannedFrames} 帧 × ${target?.exposureSec ?? '-'}s`} />
                       <StatusChip status={session.status} />
                       {ids.has(session.id) ? <Chip size="small" color="error" label="时段冲突" /> : null}
+                      {maintenanceIds.has(session.id) ? <Chip size="small" color="warning" label="维护封锁" /> : null}
                       {altitude?.below ? <Chip size="small" color="warning" label={`高度角 ${altitude.altitude}° 低于阈值 ${target?.minAltitude}°`} /> : <Chip size="small" color="success" variant="outlined" label={`高度角 ${altitude?.altitude ?? '-'}°`} />}
                       {session.rescheduleReason ? <Typography variant="caption" color="text.secondary">{session.rescheduleReason}</Typography> : null}
                     </Stack>

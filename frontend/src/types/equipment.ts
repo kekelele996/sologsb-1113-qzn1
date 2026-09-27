@@ -42,6 +42,23 @@ export interface Instrument {
   telescopeCode: string;
 }
 
+/** 设备维护时段：某观测夜内某望远镜停机检修的封锁区间，区间内不得排程 */
+export interface MaintenanceWindow {
+  id: string;
+  /** 观测夜 ID */
+  nightId: string;
+  /** 望远镜 ID */
+  telescopeId: string;
+  /** 开始时刻 HH:mm */
+  startTime: string;
+  /** 结束时刻 HH:mm（可跨零点） */
+  endTime: string;
+  /** 维护原因 */
+  reason: string;
+  /** 数据结构版本 */
+  schemaVersion: number;
+}
+
 /** 视场角计算结果 */
 export interface FieldOfView {
   /** 视场宽（度） */

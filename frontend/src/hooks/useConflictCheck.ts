@@ -1,7 +1,9 @@
 import { useCallback } from 'react';
 import { useSessionStore } from '../stores/sessionStore';
-import type { ConflictItem, ObsSession } from '../types';
-import { overlapMinutes } from '../utils/astro';
+import { useEquipmentStore } from '../stores/equipmentStore';
+import { SCHEMA_VERSION } from '../hooks/usePersistentStore';
+import type { ConflictItem, MaintenanceHit, MaintenanceWindow, ObsSession } from '../types';
+import { overlapMinutes, overlapRange, type OverlapRange } from '../utils/astro';
 
 export interface ConflictCheckInput {
   nightId: string;
@@ -12,6 +14,12 @@ export interface ConflictCheckInput {
   ignoreSessionId?: string;
 }
 
+/** 某时段撞上的维护封锁（含重叠区间） */
+export interface MaintenanceBlock {
+  window: MaintenanceWindow;
+  overlap: OverlapRange;
+}
+
 export interface ConflictCheckApi {
   findConflicts: (input: ConflictCheckInput) => ConflictItem[];
   /** 某一观测夜内的全部冲突（两两比对同一望远镜的重叠时段） */
@@ -19,6 +27,12 @@ export interface ConflictCheckApi {
   /** 冲突排程段 id 集合（可传观测夜过滤） */
   conflictIds: (nightId?: string) => Set<string>;
   hasConflict: (sessionId: string) => boolean;
+  /** 某时段撞上的维护封锁（新增 / 编辑排程段时校验） */
+  findMaintenanceBlocks: (input: ConflictCheckInput) => MaintenanceBlock[];
+  /** 某一观测夜内排程段 × 维护时段的全部重叠 */
+  maintenanceHitsOfNight: (nightId: string) => MaintenanceHit[];
+  /** 被维护封锁撞上的排程段 id 集合（可传观测夜过滤） */
+  maintenanceConflictIds: (nightId?: string) => Set<string>;
 }
 
 function describe(a: ObsSession, b: ObsSession): ConflictItem | null {
@@ -40,9 +54,30 @@ function describe(a: ObsSession, b: ObsSession): ConflictItem | null {
   };
 }
 
-/** 输入设备与时段区间即返回冲突排程段数组；被排程段列表与设备分配视图消费 */
+/** 排程段与维护时段是否重叠，重叠则生成命中记录 */
+function describeMaintenanceHit(session: ObsSession, window: MaintenanceWindow): MaintenanceHit | null {
+  if (session.nightId !== window.nightId || session.telescopeId !== window.telescopeId) {
+    return null;
+  }
+  const range = overlapRange(session.startTime, session.endTime, window.startTime, window.endTime);
+  if (!range) {
+    return null;
+  }
+  return {
+    sessionId: session.id,
+    maintenanceId: window.id,
+    nightId: session.nightId,
+    telescopeId: session.telescopeId,
+    targetId: session.targetId,
+    overlapMinutes: range.minutes,
+    overlapText: `${range.startText}-${range.endText} 重叠 ${range.minutes} 分钟`,
+  };
+}
+
+/** 输入设备与时段区间即返回冲突排程段数组与维护封锁；被排程段列表、设备分配视图与导出页消费 */
 export function useConflictCheck(): ConflictCheckApi {
   const sessions = useSessionStore((s) => s.sessions);
+  const maintenances = useEquipmentStore((s) => s.maintenances);
 
   const findConflicts = useCallback(
     (input: ConflictCheckInput): ConflictItem[] => {
@@ -57,7 +92,7 @@ export function useConflictCheck(): ConflictCheckApi {
         filterSlot: '',
         plannedFrames: 0,
         status: '待执行',
-        schemaVersion: 2,
+        schemaVersion: SCHEMA_VERSION,
       };
       return sessions
         .filter((session) => session.id !== input.ignoreSessionId)
@@ -104,5 +139,53 @@ export function useConflictCheck(): ConflictCheckApi {
 
   const hasConflict = useCallback((sessionId: string) => conflictIds().has(sessionId), [conflictIds]);
 
-  return { findConflicts, conflictsOfNight, conflictIds, hasConflict };
+  const findMaintenanceBlocks = useCallback(
+    (input: ConflictCheckInput): MaintenanceBlock[] => {
+      return maintenances
+        .filter((window) => window.nightId === input.nightId && window.telescopeId === input.telescopeId)
+        .map((window) => {
+          const overlap = overlapRange(input.startTime, input.endTime, window.startTime, window.endTime);
+          return overlap ? { window, overlap } : null;
+        })
+        .filter((item): item is MaintenanceBlock => item !== null);
+    },
+    [maintenances],
+  );
+
+  const maintenanceHitsOfNight = useCallback(
+    (nightId: string): MaintenanceHit[] => {
+      const hits: MaintenanceHit[] = [];
+      const scopedSessions = sessions.filter((session) => session.nightId === nightId);
+      const scopedWindows = maintenances.filter((window) => window.nightId === nightId);
+      scopedSessions.forEach((session) => {
+        scopedWindows.forEach((window) => {
+          const hit = describeMaintenanceHit(session, window);
+          if (hit) {
+            hits.push(hit);
+          }
+        });
+      });
+      return hits;
+    },
+    [sessions, maintenances],
+  );
+
+  const maintenanceConflictIds = useCallback(
+    (nightId?: string): Set<string> => {
+      const ids = new Set<string>();
+      const scopedSessions = nightId ? sessions.filter((session) => session.nightId === nightId) : sessions;
+      const scopedWindows = nightId ? maintenances.filter((window) => window.nightId === nightId) : maintenances;
+      scopedSessions.forEach((session) => {
+        scopedWindows.forEach((window) => {
+          if (describeMaintenanceHit(session, window)) {
+            ids.add(session.id);
+          }
+        });
+      });
+      return ids;
+    },
+    [sessions, maintenances],
+  );
+
+  return { findConflicts, conflictsOfNight, conflictIds, hasConflict, findMaintenanceBlocks, maintenanceHitsOfNight, maintenanceConflictIds };
 }

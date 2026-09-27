@@ -57,7 +57,7 @@ export default function SessionsPage() {
   const targets = useTargetStore((s) => s.targets);
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
-  const { findConflicts, conflictIds } = useConflictCheck();
+  const { findConflicts, conflictIds, findMaintenanceBlocks, maintenanceConflictIds } = useConflictCheck();
 
   /** 支持从设备分配视图一键跳转：?night=<夜ID>&highlight=<排程段ID> */
   const [searchParams] = useSearchParams();
@@ -88,6 +88,7 @@ export default function SessionsPage() {
   });
 
   const conflictSet = useMemo(() => conflictIds(), [conflictIds]);
+  const maintenanceSet = useMemo(() => maintenanceConflictIds(), [maintenanceConflictIds]);
   const backupNights = useMemo(() => nights.filter((night) => night.backup), [nights]);
 
   const visible = useMemo(() => {
@@ -116,6 +117,17 @@ export default function SessionsPage() {
       ignoreSessionId: editingId || undefined,
     });
   }, [dialogOpen, findConflicts, form.nightId, form.telescopeId, form.startTime, form.endTime, editingId]);
+
+  /** 表单时段撞上的维护封锁（新增 / 编辑排程段时实时校验） */
+  const liveMaintenanceBlocks = useMemo(() => {
+    if (!dialogOpen) return [];
+    return findMaintenanceBlocks({
+      nightId: form.nightId,
+      telescopeId: form.telescopeId,
+      startTime: form.startTime,
+      endTime: form.endTime,
+    });
+  }, [dialogOpen, findMaintenanceBlocks, form.nightId, form.telescopeId, form.startTime, form.endTime]);
 
   function openCreate() {
     setEditingId('');
@@ -169,6 +181,14 @@ export default function SessionsPage() {
     }
     if (liveConflicts.length > 0) {
       setError('该望远镜在所选时段已有排程，请调整时段或改期到备用观测夜');
+      return;
+    }
+    if (liveMaintenanceBlocks.length > 0) {
+      setError(
+        `该望远镜在所选时段处于维护封锁（${liveMaintenanceBlocks
+          .map((block) => `${block.window.startTime}-${block.window.endTime} ${block.window.reason}`)
+          .join('；')}），请调整时段或改期到备用观测夜`,
+      );
       return;
     }
     if (editingId) {
@@ -306,7 +326,10 @@ export default function SessionsPage() {
                     <StatusChip status={session.status} />
                   </TableCell>
                   <TableCell>
-                    <ConflictBadge conflicts={conflicts} compact />
+                    <Stack direction="row" spacing={0.5} alignItems="center">
+                      <ConflictBadge conflicts={conflicts} compact />
+                      {maintenanceSet.has(session.id) ? <Chip size="small" color="warning" label="维护封锁" /> : null}
+                    </Stack>
                   </TableCell>
                   <TableCell>
                     {session.rescheduleReason ? (
@@ -343,14 +366,24 @@ export default function SessionsPage() {
               {error}
             </Alert>
           ) : null}
-          {liveConflicts.length > 0 ? (
+          {liveMaintenanceBlocks.length > 0 ? (
+            <Alert severity="error" sx={{ mb: 1.5 }}>
+              该时段被维护封锁，不可排程：
+              {liveMaintenanceBlocks
+                .map(
+                  (block) =>
+                    ` ${block.window.startTime}-${block.window.endTime}（${block.window.reason}，${block.overlap.startText}-${block.overlap.endText} 重叠 ${block.overlap.minutes} 分钟）`,
+                )
+                .join('；')}
+            </Alert>
+          ) : liveConflicts.length > 0 ? (
             <Alert severity="warning" sx={{ mb: 1.5 }}>
               该望远镜在所选时段已有 {liveConflicts.length} 段排程：
               {liveConflicts.map((conflict) => ` ${conflict.otherId}（${conflict.overlapText}）`).join('；')}
             </Alert>
           ) : (
             <Alert severity="success" sx={{ mb: 1.5 }}>
-              时段校验通过，该望远镜此时段空闲
+              时段校验通过，该望远镜此时段空闲且无维护封锁
             </Alert>
           )}
           <FieldRow label="观测夜" required>
