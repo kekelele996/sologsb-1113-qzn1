@@ -16,6 +16,17 @@ export interface TimelineBar {
   dimmed?: boolean;
 }
 
+/** 时间轴背景层（如设备维护时段），渲染在排程段下方 */
+export interface TimelineLayer {
+  id: string;
+  /** 起始刻度（18:00 起算分钟） */
+  startMinute: number;
+  /** 结束刻度 */
+  endMinute: number;
+  label: string;
+  tooltip?: string;
+}
+
 export interface TimelineProps {
   bars: TimelineBar[];
   ticks: number[];
@@ -27,6 +38,8 @@ export interface TimelineProps {
   strip?: ReactNode;
   height?: number;
   conflictIds?: Set<string>;
+  /** 背景层区间（维护时段等，斜纹底色） */
+  layers?: TimelineLayer[];
   onBarClick?: (id: string) => void;
   /** 插槽：额外叠加层 */
   children?: ReactNode;
@@ -41,6 +54,7 @@ export default function Timeline({
   strip,
   height = 96,
   conflictIds,
+  layers,
   onBarClick,
   children,
 }: TimelineProps) {
@@ -79,6 +93,36 @@ export default function Timeline({
               </Typography>
             </Box>
           ))}
+
+          {/* 背景层（维护时段等），渲染在排程段下方 */}
+          {layers?.map((layer) => {
+            const leftPct = (layer.startMinute / totalMinutes) * 100;
+            const widthPct = ((layer.endMinute - layer.startMinute) / totalMinutes) * 100;
+            return (
+              <Tooltip key={layer.id} title={layer.tooltip ?? layer.label}>
+                <Box
+                  sx={{
+                    position: 'absolute',
+                    left: `${leftPct}%`,
+                    top: 18,
+                    width: `${widthPct}%`,
+                    minWidth: 20,
+                    height: height - 34,
+                    borderRadius: 1,
+                    border: '1px dashed',
+                    borderColor: 'warning.main',
+                    background: 'repeating-linear-gradient(45deg, rgba(237,108,2,0.22) 0 6px, rgba(237,108,2,0.06) 6px 12px)',
+                    overflow: 'hidden',
+                    px: 0.5,
+                  }}
+                >
+                  <Typography variant="caption" sx={{ color: 'warning.dark', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    {layer.label}
+                  </Typography>
+                </Box>
+              </Tooltip>
+            );
+          })}
 
           {/* 排程段 */}
           {bars.map((bar) => {

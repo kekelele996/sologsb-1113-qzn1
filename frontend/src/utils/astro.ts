@@ -69,6 +69,55 @@ export function overlapMinutes(aStart: string, aEnd: string, bStart: string, bEn
   return Math.max(0, Math.min(a2, b2) - Math.max(a1, b1));
 }
 
+/** 时间轴刻度区间（18:00 起算分钟数） */
+export interface AxisRange {
+  start: number;
+  end: number;
+}
+
+/** 'HH:mm' 起止 → 时间轴刻度区间（跨零点自动 +1440） */
+export function axisRangeOf(startTime: string, endTime: string): AxisRange {
+  const start = axisMinutes(startTime);
+  let end = axisMinutes(endTime);
+  if (end <= start) end += 1440;
+  return { start, end };
+}
+
+/** 两个 'HH:mm' 区间的重叠部分（跨零点安全），无重叠返回 null */
+export function overlapRange(aStart: string, aEnd: string, bStart: string, bEnd: string): { startText: string; endText: string; minutes: number } | null {
+  const a = axisRangeOf(aStart, aEnd);
+  const b = axisRangeOf(bStart, bEnd);
+  const start = Math.max(a.start, b.start);
+  const end = Math.min(a.end, b.end);
+  if (end - start <= 0) return null;
+  return { startText: minutesToTime(start), endText: minutesToTime(end), minutes: end - start };
+}
+
+/** 夜间可观测区间（日落 → 日出，截断到 18:00–06:00 时间轴刻度） */
+export function nightSpanAxis(night: Pick<ObsNight, 'sunset' | 'sunrise'>): AxisRange {
+  const sunsetAxis = axisMinutes(night.sunset);
+  // 日落早于时间轴起点 18:00 时（刻度回绕到 720 之外）从时间轴起点计
+  const start = sunsetAxis >= NIGHT_TOTAL_MINUTES ? 0 : sunsetAxis;
+  const sunriseAxis = axisMinutes(night.sunrise) || NIGHT_TOTAL_MINUTES;
+  return { start, end: Math.max(start, Math.min(sunriseAxis, NIGHT_TOTAL_MINUTES)) };
+}
+
+/** 从主区间中扣除若干封锁区间，返回剩余可用区间（按起点排序） */
+export function subtractRanges(span: AxisRange, blocks: AxisRange[]): AxisRange[] {
+  const clipped = blocks
+    .map((block) => ({ start: Math.max(block.start, span.start), end: Math.min(block.end, span.end) }))
+    .filter((block) => block.end > block.start)
+    .sort((a, b) => a.start - b.start);
+  const free: AxisRange[] = [];
+  let cursor = span.start;
+  for (const block of clipped) {
+    if (block.start > cursor) free.push({ start: cursor, end: block.start });
+    cursor = Math.max(cursor, block.end);
+  }
+  if (cursor < span.end) free.push({ start: cursor, end: span.end });
+  return free;
+}
+
 /** 分钟数 → '6h30m' */
 export function formatMinutes(minutes: number): string {
   const h = Math.floor(minutes / 60);

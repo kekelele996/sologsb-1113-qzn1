@@ -9,17 +9,18 @@ import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
-import Timeline, { type TimelineBar } from '../components/common/Timeline';
+import Timeline, { type TimelineBar, type TimelineLayer } from '../components/common/Timeline';
 import StatusChip from '../components/common/StatusChip';
 import ConflictBadge from '../components/common/ConflictBadge';
 import { usePersistentStore } from '../hooks/usePersistentStore';
 import { useConflictCheck } from '../hooks/useConflictCheck';
+import { useMaintenanceCheck } from '../hooks/useMaintenanceCheck';
 import { useNightStore } from '../stores/nightStore';
 import { useSessionStore } from '../stores/sessionStore';
 import { useTargetStore } from '../stores/targetStore';
 import { useEquipmentStore } from '../stores/equipmentStore';
 import { NIGHT_TOTAL_MINUTES, TARGET_COLOR } from '../types';
-import { altitudeAt, axisMinutes, isBelowThreshold, minutesToTime, moonBrightnessFactor, moonConflict, moonPhaseText, timelineTicks } from '../utils/astro';
+import { altitudeAt, axisMinutes, axisRangeOf, isBelowThreshold, minutesToTime, moonBrightnessFactor, moonConflict, moonPhaseText, timelineTicks } from '../utils/astro';
 
 /** 本夜编排总览：30 分钟刻度时间轴 + 月相与月出月落条带 + 冲突与标灰提示 */
 export default function OverviewPage() {
@@ -32,11 +33,15 @@ export default function OverviewPage() {
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
   const { conflictIds, conflictsOfNight } = useConflictCheck();
+  const { windowsOf, hitsOfNight, blockedSessionIds } = useMaintenanceCheck();
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
   const nightSessions = useMemo(() => sessions.filter((session) => session.nightId === night?.id), [sessions, night?.id]);
   const ids = useMemo(() => conflictIds(night?.id), [conflictIds, night?.id]);
   const conflicts = useMemo(() => conflictsOfNight(night?.id ?? ''), [conflictsOfNight, night?.id]);
+  const nightWindows = useMemo(() => windowsOf(night?.id ?? ''), [windowsOf, night?.id]);
+  const maintenanceHits = useMemo(() => hitsOfNight(night?.id ?? ''), [hitsOfNight, night?.id]);
+  const blockedIds = useMemo(() => blockedSessionIds(night?.id), [blockedSessionIds, night?.id]);
 
   /** 以夜间 22:00 作为高度角评估时刻 */
   const evaluateDate = useMemo(() => new Date(`${night?.date ?? '2025-10-11'}T22:00:00`), [night?.date]);
@@ -75,6 +80,26 @@ export default function OverviewPage() {
         };
       }),
     [nightSessions, targets, altitudes, telescopes, instruments],
+  );
+
+  /** 维护时段图层：在时间轴上以橙色斜纹色带画出维护区间 */
+  const layers: TimelineLayer[] = useMemo(
+    () =>
+      nightWindows
+        .map((window) => {
+          const range = axisRangeOf(window.startTime, window.endTime);
+          const startMinute = Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, range.start));
+          const endMinute = Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, range.end));
+          return {
+            id: window.id,
+            startMinute,
+            endMinute,
+            label: `维护 ${telescopeById(window.telescopeId)?.code ?? ''}`,
+            tooltip: `设备维护 ${window.startTime}-${window.endTime}｜${telescopeById(window.telescopeId)?.code ?? window.telescopeId}｜${window.reason}`,
+          };
+        })
+        .filter((layer) => layer.endMinute > layer.startMinute),
+    [nightWindows, telescopes],
   );
 
   const totalFrames = nightSessions.reduce((sum, session) => sum + session.plannedFrames, 0);
@@ -185,6 +210,22 @@ export default function OverviewPage() {
         </Alert>
       ) : null}
 
+      {maintenanceHits.length > 0 ? (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <AlertTitle>设备维护封锁影响 {new Set(maintenanceHits.map((hit) => hit.sessionId)).size} 段排程</AlertTitle>
+          {maintenanceHits.map((hit) => {
+            const session = nightSessions.find((item) => item.id === hit.sessionId);
+            const target = session ? targetById(session.targetId) : undefined;
+            return (
+              <div key={`${hit.windowId}-${hit.sessionId}`}>
+                {telescopeById(hit.telescopeId)?.code ?? hit.telescopeId} 维护 {hit.windowStart}-{hit.windowEnd}（{hit.reason}）撞上 {target?.name ?? hit.sessionId}：
+                {hit.overlapText}
+              </div>
+            );
+          })}
+        </Alert>
+      ) : null}
+
       {moonConflicts.length > 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
           <AlertTitle>月相与目标亮度冲突提示</AlertTitle>
@@ -199,6 +240,7 @@ export default function OverviewPage() {
         ticks={ticks}
         totalMinutes={NIGHT_TOTAL_MINUTES}
         conflictIds={ids}
+        layers={layers}
         height={120}
         strip={
           <Box sx={{ position: 'relative', height: 42, bgcolor: 'grey.900', borderRadius: 1, overflow: 'hidden' }}>
@@ -261,6 +303,7 @@ export default function OverviewPage() {
                       <Chip size="small" variant="outlined" label={`${session.plannedFrames} 帧 × ${target?.exposureSec ?? '-'}s`} />
                       <StatusChip status={session.status} />
                       {ids.has(session.id) ? <Chip size="small" color="error" label="时段冲突" /> : null}
+                      {blockedIds.has(session.id) ? <Chip size="small" color="warning" label="维护封锁" /> : null}
                       {altitude?.below ? <Chip size="small" color="warning" label={`高度角 ${altitude.altitude}° 低于阈值 ${target?.minAltitude}°`} /> : <Chip size="small" color="success" variant="outlined" label={`高度角 ${altitude?.altitude ?? '-'}°`} />}
                       {session.rescheduleReason ? <Typography variant="caption" color="text.secondary">{session.rescheduleReason}</Typography> : null}
                     </Stack>

@@ -1,4 +1,5 @@
-import type { Instrument, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
+import type { Instrument, MaintenanceWindow, ObsNight, ObsSession, ObsTarget, Telescope } from '../types';
+import { axisRangeOf, formatMinutes, minutesToTime, nightSpanAxis, overlapRange, subtractRanges } from './astro';
 
 export interface PlanContext {
   night?: ObsNight;
@@ -6,6 +7,8 @@ export interface PlanContext {
   targets: ObsTarget[];
   telescopes: Telescope[];
   instruments: Instrument[];
+  /** 本夜设备维护时段（可选，传入后导出受影响目标与夜间可用时间） */
+  maintenance?: MaintenanceWindow[];
 }
 
 function pad(value: number, width = 2): string {
@@ -14,7 +17,7 @@ function pad(value: number, width = 2): string {
 
 /** 生成当晚观测清单文本（目标、时刻、滤镜、帧数） */
 export function buildNightPlanText(context: PlanContext): string {
-  const { night, sessions, targets, telescopes, instruments } = context;
+  const { night, sessions, targets, telescopes, instruments, maintenance = [] } = context;
   const lines: string[] = [];
   lines.push('天文观测夜编排表');
   lines.push(`观测夜：${night?.date ?? '-'}　站点：${night?.siteName ?? '-'}　值班人：${night?.dutyOfficer ?? '-'}`);
@@ -51,20 +54,70 @@ export function buildNightPlanText(context: PlanContext): string {
     return sum + (target ? (session.plannedFrames * target.exposureSec) / 60 : 0);
   }, 0);
   lines.push(`合计排程段 ${ordered.length} 段，计划帧数 ${totalFrames} 帧，预计曝光 ${totalExposure.toFixed(1)} 分钟`);
+
+  // 设备维护时段：受影响目标与重叠时间 + 扣除维护后的夜间可用时间
+  const windows = night ? maintenance.filter((window) => window.nightId === night.id) : [];
+  if (night && windows.length > 0) {
+    lines.push('-'.repeat(96));
+    lines.push(`设备维护时段（本夜 ${windows.length} 段）`);
+    windows.forEach((window) => {
+      const telescope = telescopes.find((item) => item.id === window.telescopeId);
+      lines.push(`■ ${telescope?.code ?? window.telescopeId} ${window.startTime}-${window.endTime}　原因：${window.reason}`);
+      const hits = ordered
+        .filter((session) => session.telescopeId === window.telescopeId)
+        .map((session) => ({ session, overlap: overlapRange(window.startTime, window.endTime, session.startTime, session.endTime) }))
+        .filter((item): item is { session: ObsSession; overlap: NonNullable<ReturnType<typeof overlapRange>> } => item.overlap !== null);
+      if (hits.length === 0) {
+        lines.push('　未影响本夜任何排程段');
+      } else {
+        hits.forEach(({ session, overlap }) => {
+          const target = targets.find((item) => item.id === session.targetId);
+          lines.push(
+            `　受影响目标：${target?.name ?? '未知目标'}（${target?.catalog ?? '-'}）排程 ${session.startTime}-${session.endTime}，重叠 ${overlap.startText}-${overlap.endText}（${overlap.minutes} 分钟）`,
+          );
+        });
+      }
+    });
+    const span = nightSpanAxis(night);
+    lines.push(`夜间可用时间（${minutesToTime(span.start)} → ${minutesToTime(span.end)}，扣除维护时段）`);
+    telescopes
+      .filter((telescope) => windows.some((window) => window.telescopeId === telescope.id))
+      .forEach((telescope) => {
+        const blocks = windows.filter((window) => window.telescopeId === telescope.id).map((window) => axisRangeOf(window.startTime, window.endTime));
+        const free = subtractRanges(span, blocks);
+        const total = free.reduce((sum, range) => sum + (range.end - range.start), 0);
+        lines.push(
+          `■ ${telescope.code}：${free.length > 0 ? free.map((range) => `${minutesToTime(range.start)}-${minutesToTime(range.end)}`).join('、') : '无可用时段'}（合计 ${formatMinutes(total)}）`,
+        );
+      });
+    const unaffected = telescopes.filter((telescope) => !windows.some((window) => window.telescopeId === telescope.id));
+    if (unaffected.length > 0) {
+      lines.push(`■ ${unaffected.map((telescope) => telescope.code).join('、')}：无维护安排，${minutesToTime(span.start)}-${minutesToTime(span.end)} 整夜可用`);
+    }
+  }
+
   lines.push(`导出时间：${new Date().toLocaleString('zh-CN')}`);
   return lines.join('\n');
 }
 
 /** 生成 CSV */
 export function buildPlanCsv(context: PlanContext): string {
-  const { sessions, targets, telescopes, instruments } = context;
-  const header = ['观测夜', '时段', '目标名', '星表编号', '类型', '视星等', '望远镜', '终端', '滤镜', '帧数', '单帧曝光(s)', '状态', '改期原因'];
+  const { sessions, targets, telescopes, instruments, maintenance = [] } = context;
+  const header = ['观测夜', '时段', '目标名', '星表编号', '类型', '视星等', '望远镜', '终端', '滤镜', '帧数', '单帧曝光(s)', '状态', '改期原因', '维护封锁'];
   const rows = [...sessions]
     .sort((a, b) => a.startTime.localeCompare(b.startTime))
     .map((session) => {
       const target = targets.find((item) => item.id === session.targetId);
       const telescope = telescopes.find((item) => item.id === session.telescopeId);
       const instrument = instruments.find((item) => item.id === session.instrumentId);
+      const maintenanceNote = maintenance
+        .filter((window) => window.nightId === session.nightId && window.telescopeId === session.telescopeId)
+        .map((window) => {
+          const overlap = overlapRange(window.startTime, window.endTime, session.startTime, session.endTime);
+          return overlap ? `维护 ${window.startTime}-${window.endTime}（${window.reason}）重叠 ${overlap.startText}-${overlap.endText} ${overlap.minutes}分钟` : '';
+        })
+        .filter(Boolean)
+        .join('；');
       return [
         session.nightId,
         `${session.startTime}-${session.endTime}`,
@@ -79,6 +132,7 @@ export function buildPlanCsv(context: PlanContext): string {
         target ? String(target.exposureSec) : '',
         session.status,
         session.rescheduleReason ?? '',
+        maintenanceNote,
       ];
     });
   const csv = [header, ...rows]

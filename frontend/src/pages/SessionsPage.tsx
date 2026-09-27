@@ -22,9 +22,11 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import StatusChip from '../components/common/StatusChip';
 import ConflictBadge from '../components/common/ConflictBadge';
+import MaintenanceBadge from '../components/common/MaintenanceBadge';
 import FieldRow from '../components/common/FieldRow';
 import { usePersistentStore } from '../hooks/usePersistentStore';
 import { useConflictCheck } from '../hooks/useConflictCheck';
+import { useMaintenanceCheck } from '../hooks/useMaintenanceCheck';
 import { useSessionStore } from '../stores/sessionStore';
 import { useNightStore } from '../stores/nightStore';
 import { useTargetStore } from '../stores/targetStore';
@@ -58,6 +60,7 @@ export default function SessionsPage() {
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
   const { findConflicts, conflictIds } = useConflictCheck();
+  const { windowsHitBy } = useMaintenanceCheck();
 
   /** 支持从设备分配视图一键跳转：?night=<夜ID>&highlight=<排程段ID> */
   const [searchParams] = useSearchParams();
@@ -117,6 +120,17 @@ export default function SessionsPage() {
     });
   }, [dialogOpen, findConflicts, form.nightId, form.telescopeId, form.startTime, form.endTime, editingId]);
 
+  /** 表单时段撞上的设备维护封锁（新增 / 改动排程段时实时校验） */
+  const liveMaintenanceHits = useMemo(() => {
+    if (!dialogOpen) return [];
+    return windowsHitBy({
+      nightId: form.nightId,
+      telescopeId: form.telescopeId,
+      startTime: form.startTime,
+      endTime: form.endTime,
+    });
+  }, [dialogOpen, windowsHitBy, form.nightId, form.telescopeId, form.startTime, form.endTime]);
+
   function openCreate() {
     setEditingId('');
     setError('');
@@ -169,6 +183,12 @@ export default function SessionsPage() {
     }
     if (liveConflicts.length > 0) {
       setError('该望远镜在所选时段已有排程，请调整时段或改期到备用观测夜');
+      return;
+    }
+    if (liveMaintenanceHits.length > 0) {
+      setError(
+        `所选时段撞上设备维护封锁（${liveMaintenanceHits.map((hit) => `${hit.windowStart}-${hit.windowEnd} ${hit.reason}`).join('；')}），请调整时段或改期到备用观测夜`,
+      );
       return;
     }
     if (editingId) {
@@ -273,6 +293,12 @@ export default function SessionsPage() {
                 endTime: session.endTime,
                 ignoreSessionId: session.id,
               });
+              const maintenanceHits = windowsHitBy({
+                nightId: session.nightId,
+                telescopeId: session.telescopeId,
+                startTime: session.startTime,
+                endTime: session.endTime,
+              });
               return (
                 <TableRow
                   key={session.id}
@@ -306,7 +332,10 @@ export default function SessionsPage() {
                     <StatusChip status={session.status} />
                   </TableCell>
                   <TableCell>
-                    <ConflictBadge conflicts={conflicts} compact />
+                    <Stack spacing={0.5} alignItems="flex-start">
+                      <ConflictBadge conflicts={conflicts} compact />
+                      <MaintenanceBadge hits={maintenanceHits} compact />
+                    </Stack>
                   </TableCell>
                   <TableCell>
                     {session.rescheduleReason ? (
@@ -348,11 +377,18 @@ export default function SessionsPage() {
               该望远镜在所选时段已有 {liveConflicts.length} 段排程：
               {liveConflicts.map((conflict) => ` ${conflict.otherId}（${conflict.overlapText}）`).join('；')}
             </Alert>
-          ) : (
-            <Alert severity="success" sx={{ mb: 1.5 }}>
-              时段校验通过，该望远镜此时段空闲
+          ) : null}
+          {liveMaintenanceHits.length > 0 ? (
+            <Alert severity="error" sx={{ mb: 1.5 }}>
+              所选时段撞上设备维护封锁：
+              {liveMaintenanceHits.map((hit) => ` ${hit.windowStart}-${hit.windowEnd}（${hit.reason}），${hit.overlapText}`).join('；')}
             </Alert>
-          )}
+          ) : null}
+          {liveConflicts.length === 0 && liveMaintenanceHits.length === 0 ? (
+            <Alert severity="success" sx={{ mb: 1.5 }}>
+              时段校验通过，该望远镜此时段空闲且无维护封锁
+            </Alert>
+          ) : null}
           <FieldRow label="观测夜" required>
             <TextField select size="small" fullWidth value={form.nightId} onChange={(event) => setForm({ ...form, nightId: event.target.value })}>
               {nights.map((night) => (

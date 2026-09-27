@@ -8,17 +8,18 @@ import Paper from '@mui/material/Paper';
 import Stack from '@mui/material/Stack';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
-import Timeline, { type TimelineBar } from '../components/common/Timeline';
+import Timeline, { type TimelineBar, type TimelineLayer } from '../components/common/Timeline';
 import ConflictBadge from '../components/common/ConflictBadge';
 import StatusChip from '../components/common/StatusChip';
 import { usePersistentStore } from '../hooks/usePersistentStore';
 import { useConflictCheck } from '../hooks/useConflictCheck';
+import { useMaintenanceCheck } from '../hooks/useMaintenanceCheck';
 import { useSessionStore } from '../stores/sessionStore';
 import { useNightStore } from '../stores/nightStore';
 import { useTargetStore } from '../stores/targetStore';
 import { useEquipmentStore } from '../stores/equipmentStore';
 import { NIGHT_TOTAL_MINUTES, TARGET_COLOR } from '../types';
-import { axisMinutes, timelineTicks } from '../utils/astro';
+import { axisMinutes, axisRangeOf, timelineTicks } from '../utils/astro';
 import { buildNightPlanText, buildPlanCsv, downloadText, printPage } from '../utils/export';
 
 /** 导出当晚观测清单（文本 / CSV / 打印视图） */
@@ -32,20 +33,22 @@ export default function ExportPage() {
   const telescopes = useEquipmentStore((s) => s.telescopes);
   const instruments = useEquipmentStore((s) => s.instruments);
   const { conflictsOfNight, conflictIds } = useConflictCheck();
+  const { windowsOf } = useMaintenanceCheck();
   const [notice, setNotice] = useState('');
 
   const night = nights.find((item) => item.id === currentNightId) ?? nights[0];
   const nightSessions = useMemo(() => sessions.filter((session) => session.nightId === night?.id), [sessions, night?.id]);
   const conflicts = useMemo(() => conflictsOfNight(night?.id ?? ''), [conflictsOfNight, night?.id]);
   const ids = useMemo(() => conflictIds(night?.id), [conflictIds, night?.id]);
+  const nightWindows = useMemo(() => windowsOf(night?.id ?? ''), [windowsOf, night?.id]);
 
   const planText = useMemo(
-    () => buildNightPlanText({ night, sessions: nightSessions, targets, telescopes, instruments }),
-    [night, nightSessions, targets, telescopes, instruments],
+    () => buildNightPlanText({ night, sessions: nightSessions, targets, telescopes, instruments, maintenance: nightWindows }),
+    [night, nightSessions, targets, telescopes, instruments, nightWindows],
   );
   const csv = useMemo(
-    () => buildPlanCsv({ night, sessions: nightSessions, targets, telescopes, instruments }),
-    [night, nightSessions, targets, telescopes, instruments],
+    () => buildPlanCsv({ night, sessions: nightSessions, targets, telescopes, instruments, maintenance: nightWindows }),
+    [night, nightSessions, targets, telescopes, instruments, nightWindows],
   );
 
   const bars: TimelineBar[] = useMemo(
@@ -65,6 +68,25 @@ export default function ExportPage() {
         };
       }),
     [nightSessions, targets],
+  );
+
+  /** 维护时段图层：与总览一致的橙色斜纹色带 */
+  const layers: TimelineLayer[] = useMemo(
+    () =>
+      nightWindows
+        .map((window) => {
+          const range = axisRangeOf(window.startTime, window.endTime);
+          const telescope = telescopes.find((item) => item.id === window.telescopeId);
+          return {
+            id: window.id,
+            startMinute: Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, range.start)),
+            endMinute: Math.max(0, Math.min(NIGHT_TOTAL_MINUTES, range.end)),
+            label: `维护 ${telescope?.code ?? ''}`,
+            tooltip: `设备维护 ${window.startTime}-${window.endTime}｜${telescope?.code ?? window.telescopeId}｜${window.reason}`,
+          };
+        })
+        .filter((layer) => layer.endMinute > layer.startMinute),
+    [nightWindows, telescopes],
   );
 
   return (
@@ -118,7 +140,7 @@ export default function ExportPage() {
       </Stack>
 
       <Box className="no-print" sx={{ mb: 3 }}>
-        <Timeline bars={bars} ticks={timelineTicks(120)} totalMinutes={NIGHT_TOTAL_MINUTES} conflictIds={ids} height={104} />
+        <Timeline bars={bars} ticks={timelineTicks(120)} totalMinutes={NIGHT_TOTAL_MINUTES} conflictIds={ids} layers={layers} height={104} />
       </Box>
 
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '2fr 1fr' }, gap: 2 }}>
